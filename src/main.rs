@@ -22,21 +22,13 @@ async fn main() -> octocrab::Result<()> {
         .per_page(100)
         .send()
         .await?
-        .into_iter()
-        .collect();
+        .items;
 
     let mut terminal = ratatui::init();
-
-    let (event_tx, event_rx) = mpsc::channel::<Event>();
-
+    let rx = App::spawn_input_thread();
     let mut app = App::new(repos);
 
-    let tx_to_input_events = event_tx.clone();
-    // Fix this
-    thread::spawn(move || {});
-
-    let app_result = app.run(&mut terminal, event_rx);
-
+    let app_result = app.run(&mut terminal, rx);
     ratatui::restore();
 
     Ok(())
