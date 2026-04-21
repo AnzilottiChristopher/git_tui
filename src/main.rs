@@ -25,8 +25,10 @@ async fn main() -> octocrab::Result<()> {
         .items;
 
     let mut terminal = ratatui::init();
-    let rx = App::spawn_input_thread();
-    let mut app = App::new(repos);
+    let (tx, rx) = mpsc::channel();
+    App::spawn_input_thread(tx.clone());
+
+    let mut app = App::new(repos, octocrab, tx);
 
     let app_result = app.run(&mut terminal, rx);
     ratatui::restore();
