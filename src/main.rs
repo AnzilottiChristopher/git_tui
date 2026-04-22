@@ -1,9 +1,9 @@
-use std::{sync::mpsc, thread};
+use std::sync::mpsc;
 
 use dotenv::dotenv;
 use octocrab::Octocrab;
 
-use crate::app::{App, Event};
+use crate::app::App;
 
 mod app;
 
@@ -30,7 +30,7 @@ async fn main() -> octocrab::Result<()> {
 
     let mut app = App::new(repos, octocrab, tx);
 
-    let app_result = app.run(&mut terminal, rx);
+    let _ = app.run(&mut terminal, rx);
     ratatui::restore();
 
     Ok(())
