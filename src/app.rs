@@ -2,7 +2,7 @@ use crossterm::event::{self, KeyCode, KeyEventKind};
 use octocrab::Octocrab;
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Constraint, Layout, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     text::ToSpan,
     widgets::{Block, BorderType, Borders, List, ListItem, ListState, Padding, Paragraph},
@@ -17,6 +17,7 @@ use std::{
 pub struct App {
     exit: bool,
     repos: Vec<octocrab::models::Repository>,
+    chosen_repo: Option<octocrab::models::Repository>,
     list_state: ListState,
     octocrab: Octocrab,
     selected_readme: Option<String>,
@@ -33,7 +34,16 @@ pub enum Event {
 #[derive(PartialEq)]
 enum FocusedPanel {
     RepoList,
-    Description, // This is the ReadMe part not the
+    Description, // This is the ReadMe part not the description
+    SingleRepo(SingleRepoPanel),
+}
+
+#[derive(PartialEq)]
+enum SingleRepoPanel {
+    Origin,
+    Local,
+    Branches,
+    TodoList,
 }
 
 impl App {
@@ -45,6 +55,7 @@ impl App {
         App {
             exit: false,
             repos,
+            chosen_repo: None,
             list_state: ListState::default(),
             octocrab: octocrab,
             selected_readme: None,
@@ -80,21 +91,44 @@ impl App {
 
     // This function fires multiple times
     // This checks which os the user is on to determine if a KeyEventKind::Press is needed
+    // Linux normally doesn't but some terminals may need it
     pub fn check_os(&mut self, key_event: crossterm::event::KeyEvent) {
         if cfg!(target_os = "windows") {
             if key_event.kind == KeyEventKind::Press {
                 match self.focused_panel {
                     FocusedPanel::RepoList => self.handle_key_event_repos(key_event.code),
                     FocusedPanel::Description => self.handle_key_event_description(key_event.code),
+                    FocusedPanel::SingleRepo(ref panel) => match panel {
+                        //TODO need more specific keys for certain chosen panels
+                        _ => self.handle_key_event_single_repo(key_event.code),
+                    },
                 }
             }
         } else if cfg!(target_os = "linux") {
             match self.focused_panel {
                 FocusedPanel::RepoList => self.handle_key_event_repos(key_event.code),
                 FocusedPanel::Description => self.handle_key_event_description(key_event.code),
+                FocusedPanel::SingleRepo(ref panel) => match panel {
+                    //TODO need more specific keys for certain chosen panels
+                    _ => self.handle_key_event_single_repo(key_event.code),
+                },
             }
         } else {
             //Handle Mac OS here
+        }
+    }
+
+    fn handle_key_event_single_repo(&mut self, key: crossterm::event::KeyCode) {
+        if key == KeyCode::Esc || key == KeyCode::Char('q') {
+            self.exit = true;
+        }
+
+        match key {
+            KeyCode::Char(char) => match char {
+                'B' => self.focused_panel = FocusedPanel::RepoList,
+                _ => {}
+            },
+            _ => {}
         }
     }
 
@@ -152,6 +186,13 @@ impl App {
                 self.last_selection_change = Some(Instant::now());
                 self.selected_readme = None;
             }
+            KeyCode::Enter => {
+                self.chosen_repo = self
+                    .list_state
+                    .selected()
+                    .map(|index| self.repos[index].clone());
+                self.focused_panel = FocusedPanel::SingleRepo(SingleRepoPanel::Origin)
+            }
             KeyCode::Left => self.focused_panel = FocusedPanel::RepoList,
             KeyCode::Right => self.focused_panel = FocusedPanel::Description,
             _ => {}
@@ -172,10 +213,54 @@ impl App {
         });
     }
 
+    // ALL MY DRAWING/RATATUI Functions
     fn draw(&mut self, frame: &mut Frame) {
-        let [main_area] = Layout::vertical([Constraint::Percentage(95)]).areas(frame.area());
+        let [mut main_area] = Layout::vertical([Constraint::Percentage(95)]).areas(frame.area());
 
-        self.draw_repo_list(frame, main_area);
+        if !matches!(self.focused_panel, FocusedPanel::SingleRepo(_)) {
+            self.draw_repo_list(frame, main_area);
+        } else {
+            [main_area] = Layout::vertical([Constraint::Fill(1)]).areas(frame.area());
+            self.draw_single_repo(frame, main_area);
+        }
+    }
+
+    fn draw_single_repo(&mut self, frame: &mut Frame, area: Rect) {
+        let name = self
+            .chosen_repo
+            .as_ref()
+            .map(|repo| repo.name.clone())
+            .unwrap_or("No Repo Selected".to_string());
+
+        let block = Block::default()
+            .title(name.to_span().into_centered_line())
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded);
+
+        let inner_area = block.inner(area);
+        frame.render_widget(block, area);
+
+        let [file_area, tabs_area] =
+            Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).areas(inner_area);
+
+        //Branch Area block
+        let mut selection = 0;
+    }
+    fn draw_origin_files(&mut self, frame: &mut Frame, area: Rect) {}
+    fn draw_local_files(&mut self, frame: &mut Frame, area: Rect) {}
+    fn render_tab_content(&mut self, frame: &mut Frame, area: Rect, selected_tab: usize) {
+        //TODO Fix tabs
+        let text: &str = match selected_tab {
+            0 => "Tab 1".into(),
+            1 => "Tab 2".into(),
+            _ => unreachable!(),
+        };
+
+        let block = Paragraph::new(text)
+            .alignment(Alignment::Center)
+            .block(Block::bordered());
+
+        frame.render_widget(block, area);
     }
 
     fn draw_repo_list(&mut self, frame: &mut Frame, area: Rect) {
