@@ -25,11 +25,14 @@ pub struct App {
     last_selection_change: Option<Instant>,
     tx: mpsc::Sender<Event>,
     focused_panel: FocusedPanel,
+    readme_scroll: u16,
 }
 pub enum Event {
     Input(crossterm::event::KeyEvent),
     ReadmeFetched(String),
 }
+
+#[derive(PartialEq)]
 enum FocusedPanel {
     RepoList,
     Description, // This is the ReadMe part not the
@@ -57,6 +60,7 @@ impl App {
             last_selection_change: None,
             tx,
             focused_panel: FocusedPanel::RepoList,
+            readme_scroll: 0,
         }
     }
 
@@ -65,6 +69,7 @@ impl App {
         terminal: &mut DefaultTerminal,
         rx: mpsc::Receiver<Event>,
     ) -> io::Result<()> {
+        self.list_state.select_first();
         while !self.exit {
             if let Some(last_change) = self.last_selection_change {
                 if last_change.elapsed() >= Duration::from_millis(300) {
@@ -93,7 +98,10 @@ impl App {
                 }
             }
         } else if cfg!(target_os = "linux") {
-            self.handle_key_event_repos(key_event.code);
+            match self.focused_panel {
+                FocusedPanel::RepoList => self.handle_key_event_repos(key_event.code),
+                FocusedPanel::Description => self.handle_key_event_description(key_event.code),
+            }
         } else {
             //Handle Mac OS here
         }
@@ -107,11 +115,15 @@ impl App {
         match key {
             KeyCode::Char(char) => match char {
                 'h' => self.focused_panel = FocusedPanel::RepoList,
-                'j' => self.focused_panel = FocusedPanel::Description,
+                'l' => self.focused_panel = FocusedPanel::Description,
+                'j' => self.readme_scroll += 1,
+                'k' => self.readme_scroll = self.readme_scroll.saturating_sub(1),
                 _ => {}
             },
             KeyCode::Left => self.focused_panel = FocusedPanel::RepoList,
             KeyCode::Right => self.focused_panel = FocusedPanel::Description,
+            KeyCode::Down => self.readme_scroll += 1,
+            KeyCode::Up => self.readme_scroll = self.readme_scroll.saturating_sub(1),
             _ => {}
         }
     }
@@ -127,12 +139,16 @@ impl App {
                     self.list_state.select_previous();
                     self.last_selection_change = Some(Instant::now());
                     self.selected_readme = None;
+                    self.readme_scroll = 0;
                 }
                 'j' => {
                     self.list_state.select_next();
                     self.last_selection_change = Some(Instant::now());
                     self.selected_readme = None;
+                    self.readme_scroll = 0;
                 }
+                'h' => self.focused_panel = FocusedPanel::RepoList,
+                'l' => self.focused_panel = FocusedPanel::Description,
                 _ => {}
             },
             KeyCode::Up => {
@@ -145,6 +161,8 @@ impl App {
                 self.last_selection_change = Some(Instant::now());
                 self.selected_readme = None;
             }
+            KeyCode::Left => self.focused_panel = FocusedPanel::RepoList,
+            KeyCode::Right => self.focused_panel = FocusedPanel::Description,
             _ => {}
         }
     }
@@ -165,7 +183,7 @@ impl App {
 
     fn draw(&mut self, frame: &mut Frame) {
         let [repo_area, footer_area] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(3)]).areas(frame.area());
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
 
         self.draw_repo_list(frame, repo_area);
     }
@@ -173,7 +191,11 @@ impl App {
     fn draw_repo_list(&mut self, frame: &mut Frame, area: Rect) {
         let block = Block::default()
             .title("Github Repositories".to_span().into_centered_line())
-            .title_bottom("'J/↓-Down' 'k/↑-Up'".to_span().into_centered_line())
+            .title_bottom(
+                "'←/h-Left' '↓/j-Down' '↑/k-Up' '→/l-Right'"
+                    .to_span()
+                    .into_centered_line(),
+            )
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded);
 
@@ -190,6 +212,13 @@ impl App {
             .collect();
 
         let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL).border_type(
+                if self.focused_panel == FocusedPanel::RepoList {
+                    BorderType::Double
+                } else {
+                    BorderType::Rounded
+                },
+            ))
             .highlight_symbol(">")
             .highlight_style(Style::default().fg(Color::Yellow));
 
@@ -203,7 +232,11 @@ impl App {
                 .title(repo_name.to_span().fg(Color::Yellow))
                 .padding(Padding::top(1))
                 .borders(Borders::ALL)
-                .border_type(BorderType::Rounded);
+                .border_type(if self.focused_panel == FocusedPanel::Description {
+                    BorderType::Double
+                } else {
+                    BorderType::Rounded
+                });
 
             let detail_inner = detail_block.inner(detail_area);
             frame.render_widget(detail_block, detail_area);
@@ -228,7 +261,10 @@ impl App {
             let readme_inner = readme_block.inner(readme_area);
 
             frame.render_widget(readme_block, readme_area);
-            frame.render_widget(Paragraph::new(readme_text), readme_inner);
+            frame.render_widget(
+                Paragraph::new(readme_text).scroll((self.readme_scroll, 0)),
+                readme_inner,
+            );
         }
     }
 
