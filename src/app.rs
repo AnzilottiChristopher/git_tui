@@ -2,15 +2,13 @@ use crossterm::event::{self, KeyCode, KeyEventKind};
 use octocrab::Octocrab;
 use ratatui::{
     DefaultTerminal, Frame,
-    buffer::Buffer,
     layout::{Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
-    symbols::border,
-    text::{self, Line, ToSpan},
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Padding, Paragraph, Widget},
+    text::ToSpan,
+    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Padding, Paragraph},
 };
 use std::{
-    char, io,
+    io,
     sync::mpsc,
     thread,
     time::{Duration, Instant},
@@ -36,13 +34,6 @@ pub enum Event {
 enum FocusedPanel {
     RepoList,
     Description, // This is the ReadMe part not the
-}
-
-#[derive(PartialEq)]
-enum OperatingSystem {
-    Windows,
-    Linux,
-    Mac,
 }
 
 impl App {
@@ -182,10 +173,9 @@ impl App {
     }
 
     fn draw(&mut self, frame: &mut Frame) {
-        let [repo_area, footer_area] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+        let [main_area] = Layout::vertical([Constraint::Percentage(95)]).areas(frame.area());
 
-        self.draw_repo_list(frame, repo_area);
+        self.draw_repo_list(frame, main_area);
     }
 
     fn draw_repo_list(&mut self, frame: &mut Frame, area: Rect) {
