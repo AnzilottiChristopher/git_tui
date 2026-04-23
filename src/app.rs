@@ -1,11 +1,9 @@
 use crossterm::event::{self, KeyCode, KeyEventKind};
-use octocrab::{
-    Octocrab,
-    models::{commits::FileStatus, repos::ContentItems},
-};
+use git2::Repository;
+use octocrab::Octocrab;
 use ratatui::{
     DefaultTerminal, Frame,
-    layout::{Alignment, Constraint, Layout, Offset, Rect},
+    layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style, Stylize},
     symbols,
     text::ToSpan,
@@ -17,7 +15,12 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use walkdir::WalkDir;
 
+struct FileStatus {
+    pub path: String,
+    pub status: git2::Status,
+}
 struct TreeNode {
     name: String,
     path: String,
@@ -38,10 +41,12 @@ pub struct App {
     focused_panel: FocusedPanel,
     readme_scroll: u16,
     selected_tab: usize,
-    repo_files: Option<octocrab::models::repos::ContentItems>,
     file_tree: Option<Vec<TreeNode>>,
     file_tree_state: ListState,
     current_path: String,
+    local_repo: Option<Repository>,
+    local_commit_state: ListState,
+    local_statuses: Vec<FileStatus>,
 }
 pub enum Event {
     Input(crossterm::event::KeyEvent),
@@ -81,10 +86,12 @@ impl App {
             focused_panel: FocusedPanel::RepoList,
             readme_scroll: 0,
             selected_tab: 0,
-            repo_files: None,
             file_tree: None,
             file_tree_state: ListState::default(),
             current_path: String::new(),
+            local_repo: None,
+            local_commit_state: ListState::default(),
+            local_statuses: Vec::new(),
         }
     }
 
@@ -179,21 +186,47 @@ impl App {
                 'B' => self.focused_panel = FocusedPanel::RepoList,
                 'h' => self.focused_panel = FocusedPanel::SingleRepo(SingleRepoPanel::Origin),
                 'l' => self.focused_panel = FocusedPanel::SingleRepo(SingleRepoPanel::Tabs),
+                'a' => {
+                    if let Some(index) = self.local_commit_state.selected() {
+                        let path = self.local_statuses[index].path.clone();
+                        self.stage_file(&path);
+                    }
+                }
                 'j' => {
                     if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Origin) {
                         self.file_tree_state.select_next();
+                    } else if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Local)
+                    {
+                        //Do something here
+                        self.local_commit_state.select_next();
                     }
                 }
                 'k' => {
                     if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Origin) {
                         self.file_tree_state.select_previous();
+                    } else if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Local)
+                    {
+                        //Do something here
+                        self.local_commit_state.select_previous();
+                    }
+                }
+                'J' => {
+                    if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Origin) {
+                        self.focused_panel = FocusedPanel::SingleRepo(SingleRepoPanel::Local);
+                    }
+                }
+                'K' => {
+                    if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Local) {
+                        self.focused_panel = FocusedPanel::SingleRepo(SingleRepoPanel::Origin);
                     }
                 }
                 _ => {}
             },
             KeyCode::Tab => {
                 if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Tabs) {
-                    self.selected_tab = (self.selected_tab + 1) % 2;
+                    self.selected_tab = (self.selected_tab + 1) % 3; //Adjust based on amount of
+                    //tabs
+                    //Should Probably Make a stored variable if wanted to add tabs
                 }
             }
             KeyCode::Enter => {
@@ -289,6 +322,9 @@ impl App {
                 self.current_path = String::new();
                 self.fetch_origin_files();
                 self.file_tree_state.select(Some(0));
+                self.local_commit_state.select(Some(0));
+                self.local_repo = self.find_local_repo();
+                self.refresh_local_statuses();
             }
             KeyCode::Left => self.focused_panel = FocusedPanel::RepoList,
             KeyCode::Right => self.focused_panel = FocusedPanel::Description,
@@ -346,6 +382,7 @@ impl App {
         self.render_tab_content(frame, tabs_area, self.selected_tab);
         self.render_tabs(frame, tabs_area, self.selected_tab);
         self.draw_origin_files(frame, origin_area);
+        self.draw_local_files(frame, local_area);
     }
 
     fn draw_origin_files(&mut self, frame: &mut Frame, area: Rect) {
@@ -392,7 +429,7 @@ impl App {
 
         frame.render_widget(block, area);
 
-        let mut items: Vec<ListItem>;
+        let items: Vec<ListItem>;
         //Draw the file tree
         if let Some(tree) = self.file_tree.as_mut() {
             items = tree
@@ -419,7 +456,112 @@ impl App {
             .highlight_style(Style::default().fg(Color::Yellow));
         frame.render_stateful_widget(list, inner_area, &mut self.file_tree_state);
     }
-    fn draw_local_files(&mut self, frame: &mut Frame, area: Rect) {}
+
+    fn draw_local_files(&mut self, frame: &mut Frame, area: Rect) {
+        let branch_name = self
+            .local_repo
+            .as_ref()
+            .and_then(|repo| repo.head().ok())
+            .and_then(|head| head.shorthand().map(|s| s.to_string()))
+            .unwrap_or("No local repo".to_string());
+        let title_color = if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Local)
+        {
+            Color::Magenta
+        } else {
+            Color::DarkGray
+        };
+        let block = Block::default()
+            .title("Local".to_span().into_left_aligned_line().fg(title_color))
+            .title(
+                branch_name
+                    .to_span()
+                    .into_right_aligned_line()
+                    .fg(title_color),
+            )
+            .borders(Borders::ALL)
+            .border_type(
+                if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Local) {
+                    BorderType::Double
+                } else {
+                    BorderType::Rounded
+                },
+            )
+            .border_style(
+                if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Local) {
+                    Style::default().fg(Color::Rgb(149, 225, 211))
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                },
+            );
+
+        let inner_area = block.inner(area);
+        frame.render_widget(block, area);
+
+        let items: Vec<ListItem> = if self.local_statuses.is_empty() {
+            vec![ListItem::new("No changes").style(Style::default().fg(Color::DarkGray))]
+        } else {
+            self.local_statuses
+                .iter()
+                .map(|entry| {
+                    let (label, color) = match entry.status {
+                        s if s.contains(git2::Status::WT_MODIFIED) => {
+                            ("Modified", Color::Rgb(255, 179, 186))
+                        }
+                        s if s.contains(git2::Status::INDEX_MODIFIED) => {
+                            ("Staged", Color::Rgb(149, 225, 211))
+                        }
+                        s if s.contains(git2::Status::INDEX_NEW) => {
+                            ("New", Color::Rgb(149, 225, 211))
+                        }
+                        s if s.contains(git2::Status::WT_NEW) => ("Untracked", Color::DarkGray),
+                        s if s.contains(git2::Status::WT_DELETED) => ("Deleted", Color::Red),
+                        s if s.contains(git2::Status::IGNORED) => ("Ignored", Color::DarkGray),
+                        _ => ("Unknown", Color::White),
+                    };
+                    ListItem::new(format!("{:<40} {}", entry.path, label))
+                        .style(Style::default().fg(color))
+                })
+                .collect()
+        };
+        // let items: Vec<ListItem> = if let Some(repo) = self.local_repo.as_ref() {
+        //     if let Ok(statuses) = repo.statuses(None) {
+        //         statuses
+        //             .iter()
+        //             .map(|entry| {
+        //                 let path = entry.path().unwrap_or("unknown");
+        //                 let status = entry.status();
+        //                 let (label, color) = match status {
+        //                     s if s.contains(git2::Status::WT_MODIFIED) => {
+        //                         ("Modified", Color::Rgb(255, 179, 186))
+        //                     }
+        //                     s if s.contains(git2::Status::INDEX_MODIFIED) => {
+        //                         ("Staged", Color::Rgb(149, 225, 211))
+        //                     }
+        //                     s if s.contains(git2::Status::INDEX_NEW) => {
+        //                         ("New", Color::Rgb(149, 225, 211))
+        //                     }
+        //                     s if s.contains(git2::Status::WT_NEW) => ("Untracked", Color::DarkGray),
+        //                     s if s.contains(git2::Status::WT_DELETED) => ("Deleted", Color::Red),
+        //                     s if s.contains(git2::Status::IGNORED) => ("Ignored", Color::DarkGray),
+        //                     _ => ("Unknown", Color::White),
+        //                 };
+        //                 ListItem::new(format!("{:<40} {}", path, label))
+        //                     .style(Style::default().fg(color))
+        //             })
+        //             .collect()
+        //     } else {
+        //         vec![ListItem::new("Failed to get status")]
+        //     }
+        // } else {
+        //     vec![
+        //         ListItem::new("No local repository found")
+        //             .style(Style::default().fg(Color::DarkGray)),
+        //     ]
+        // };
+
+        let list = List::new(items).highlight_symbol("> ");
+        frame.render_stateful_widget(list, inner_area, &mut self.local_commit_state);
+    }
 
     fn render_tabs(&mut self, frame: &mut Frame, area: Rect, selected_tab: usize) {
         let tabs = Tabs::new(vec!["Branch Graph", "File Viewer", "Todo List"])
@@ -582,6 +724,75 @@ impl App {
                     tx.send(Event::FilesFetched(content)).ok();
                 }
             });
+        }
+    }
+
+    fn find_local_repo(&self) -> Option<Repository> {
+        let remote_url = self
+            .chosen_repo
+            .as_ref()?
+            .clone_url
+            .as_ref()?
+            .as_str()
+            .trim_end_matches(".git");
+
+        let search_paths = vec![dirs::home_dir()?];
+
+        for base_path in search_paths {
+            for entry in WalkDir::new(base_path)
+                .max_depth(4)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_name() == ".git")
+            {
+                if let Some(repo_path) = entry.path().parent() {
+                    if let Ok(repo) = Repository::open(repo_path) {
+                        let matches = if let Ok(remote) = repo.find_remote("origin") {
+                            let url = remote.url().unwrap_or("").trim_end_matches(".git");
+
+                            let normalized = url
+                                .replace("git@github.com", "github.com/")
+                                .replace("https://github.com/", "github.com/");
+
+                            let target = remote_url.replace("https://github.com/", "github.com/");
+
+                            normalized == target
+                        } else {
+                            false
+                        };
+
+                        if matches {
+                            return Some(repo);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn refresh_local_statuses(&mut self) {
+        self.local_statuses.clear();
+        if let Some(repo) = self.local_repo.as_ref() {
+            if let Ok(statuses) = repo.statuses(None) {
+                self.local_statuses = statuses
+                    .iter()
+                    .map(|entry| FileStatus {
+                        path: entry.path().unwrap_or("unknown").to_string(),
+                        status: entry.status(),
+                    })
+                    .collect();
+            }
+        }
+    }
+
+    fn stage_file(&mut self, path: &str) {
+        if let Some(repo) = self.local_repo.as_ref() {
+            if let Ok(mut index) = repo.index() {
+                index.add_path(std::path::Path::new(path)).ok();
+                index.write().ok();
+                self.refresh_local_statuses();
+            }
         }
     }
 }
