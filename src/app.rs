@@ -105,7 +105,11 @@ impl App {
                 Ok(Event::Input(key_event)) => self.check_os(key_event),
                 Ok(Event::ReadmeFetched(text)) => self.selected_readme = Some(text),
                 Ok(Event::FilesFetched(content)) => {
-                    let depth = self.current_path.matches('/').count();
+                    let depth = if self.current_path.is_empty() {
+                        0
+                    } else {
+                        self.current_path.matches('/').count() + 1
+                    };
                     let new_nodes: Vec<TreeNode> = content
                         .items
                         .iter()
@@ -175,11 +179,46 @@ impl App {
                 'B' => self.focused_panel = FocusedPanel::RepoList,
                 'h' => self.focused_panel = FocusedPanel::SingleRepo(SingleRepoPanel::Origin),
                 'l' => self.focused_panel = FocusedPanel::SingleRepo(SingleRepoPanel::Tabs),
+                'j' => {
+                    if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Origin) {
+                        self.file_tree_state.select_next();
+                    }
+                }
+                'k' => {
+                    if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Origin) {
+                        self.file_tree_state.select_previous();
+                    }
+                }
                 _ => {}
             },
             KeyCode::Tab => {
                 if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Tabs) {
                     self.selected_tab = (self.selected_tab + 1) % 2;
+                }
+            }
+            KeyCode::Enter => {
+                if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Origin) {
+                    if let Some(index) = self.file_tree_state.selected() {
+                        if let Some(tree) = self.file_tree.as_mut() {
+                            let node = &tree[index];
+                            if node.is_dir {
+                                if node.is_open {
+                                    let depth = node.depth;
+                                    let path = node.path.clone();
+                                    tree[index].is_open = false;
+                                    tree.retain(|n| {
+                                        !(n.path.starts_with(&format!("{}/", path))
+                                            && n.depth > depth)
+                                    });
+                                } else {
+                                    let path = node.path.clone();
+                                    tree[index].is_open = true;
+                                    self.current_path = path;
+                                    self.fetch_origin_files();
+                                }
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
@@ -246,7 +285,10 @@ impl App {
                     .selected()
                     .map(|index| self.repos[index].clone());
                 self.focused_panel = FocusedPanel::SingleRepo(SingleRepoPanel::Origin);
+                self.file_tree = None;
+                self.current_path = String::new();
                 self.fetch_origin_files();
+                self.file_tree_state.select(Some(0));
             }
             KeyCode::Left => self.focused_panel = FocusedPanel::RepoList,
             KeyCode::Right => self.focused_panel = FocusedPanel::Description,
@@ -375,12 +417,12 @@ impl App {
         let list = List::new(items)
             .highlight_symbol("> ")
             .highlight_style(Style::default().fg(Color::Yellow));
-        frame.render_widget(list, inner_area);
+        frame.render_stateful_widget(list, inner_area, &mut self.file_tree_state);
     }
     fn draw_local_files(&mut self, frame: &mut Frame, area: Rect) {}
 
     fn render_tabs(&mut self, frame: &mut Frame, area: Rect, selected_tab: usize) {
-        let tabs = Tabs::new(vec!["Tab 1", "Tab 2"])
+        let tabs = Tabs::new(vec!["Branch Graph", "File Viewer", "Todo List"])
             .style(
                 if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Tabs) {
                     Style::default().fg(Color::Rgb(149, 225, 211))
@@ -404,8 +446,9 @@ impl App {
     fn render_tab_content(&mut self, frame: &mut Frame, area: Rect, selected_tab: usize) {
         //TODO Fix tabs
         let text: &str = match selected_tab {
-            0 => "Tab 1 Content".into(),
-            1 => "Tab 2 Content".into(),
+            0 => "Branch Graph".into(),
+            1 => "File Viewer".into(),
+            2 => "Todo List".into(),
             _ => unreachable!(),
         };
 
@@ -526,11 +569,13 @@ impl App {
             let repo_name = repo.name.clone();
             let octocrab = self.octocrab.clone();
             let tx = self.tx.clone();
+            let path = self.current_path.clone();
 
             tokio::spawn(async move {
                 if let Ok(content) = octocrab
                     .repos(&owner, &repo_name)
                     .get_content()
+                    .path(&path)
                     .send()
                     .await
                 {
