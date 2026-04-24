@@ -7,7 +7,9 @@ use ratatui::{
     style::{Color, Style, Stylize},
     symbols,
     text::ToSpan,
-    widgets::{Block, BorderType, Borders, List, ListItem, ListState, Padding, Paragraph, Tabs},
+    widgets::{
+        Block, BorderType, Borders, Clear, List, ListItem, ListState, Padding, Paragraph, Tabs,
+    },
 };
 use std::{
     io,
@@ -47,6 +49,7 @@ pub struct App {
     local_repo: Option<Repository>,
     local_commit_state: ListState,
     local_statuses: Vec<FileStatus>,
+    mode: AppMode,
 }
 pub enum Event {
     Input(crossterm::event::KeyEvent),
@@ -66,6 +69,11 @@ enum SingleRepoPanel {
     Origin,
     Local,
     Tabs,
+}
+
+enum AppMode {
+    Normal,
+    CommitMessage(String),
 }
 
 impl App {
@@ -92,6 +100,7 @@ impl App {
             local_repo: None,
             local_commit_state: ListState::default(),
             local_statuses: Vec::new(),
+            mode: AppMode::Normal,
         }
     }
 
@@ -151,8 +160,17 @@ impl App {
     // This checks which os the user is on to determine if a KeyEventKind::Press is needed
     // Linux normally doesn't but some terminals may need it
     pub fn check_os(&mut self, key_event: crossterm::event::KeyEvent) {
+        // if matches!(self.mode, AppMode::CommitMessage(_)) {
+        //     self.handle_commit_input(key_event.code);
+        //     return;
+        // }
+
         if cfg!(target_os = "windows") {
             if key_event.kind == KeyEventKind::Press {
+                if matches!(self.mode, AppMode::CommitMessage(_)) {
+                    self.handle_commit_input(key_event.code);
+                    return;
+                }
                 match self.focused_panel {
                     FocusedPanel::RepoList => self.handle_key_event_repos(key_event.code),
                     FocusedPanel::Description => self.handle_key_event_description(key_event.code),
@@ -163,6 +181,10 @@ impl App {
                 }
             }
         } else if cfg!(target_os = "linux") {
+            if matches!(self.mode, AppMode::CommitMessage(_)) {
+                self.handle_commit_input(key_event.code);
+                return;
+            }
             match self.focused_panel {
                 FocusedPanel::RepoList => self.handle_key_event_repos(key_event.code),
                 FocusedPanel::Description => self.handle_key_event_description(key_event.code),
@@ -173,6 +195,31 @@ impl App {
             }
         } else {
             //Handle Mac OS here
+        }
+    }
+
+    fn handle_commit_input(&mut self, key: KeyCode) {
+        match key {
+            KeyCode::Char(c) => {
+                if let AppMode::CommitMessage(ref mut msg) = self.mode {
+                    msg.push(c);
+                }
+            }
+            KeyCode::Backspace => {
+                if let AppMode::CommitMessage(ref mut msg) = self.mode {
+                    msg.pop();
+                }
+            }
+            KeyCode::Enter => {
+                if let AppMode::CommitMessage(ref msg) = self.mode {
+                    let message = msg.clone();
+                    self.commit(&message);
+                }
+                self.mode = AppMode::Normal;
+                self.refresh_local_statuses();
+            }
+            KeyCode::Esc => self.mode = AppMode::Normal,
+            _ => {}
         }
     }
 
@@ -190,6 +237,11 @@ impl App {
                     if let Some(index) = self.local_commit_state.selected() {
                         let path = self.local_statuses[index].path.clone();
                         self.stage_file(&path);
+                    }
+                }
+                'c' => {
+                    if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Local) {
+                        self.mode = AppMode::CommitMessage(String::new());
                     }
                 }
                 'j' => {
@@ -355,6 +407,9 @@ impl App {
         } else {
             [main_area] = Layout::vertical([Constraint::Fill(1)]).areas(frame.area());
             self.draw_single_repo(frame, main_area);
+            if matches!(self.mode, AppMode::CommitMessage(_)) {
+                self.draw_commit_popup(frame);
+            }
         }
     }
 
@@ -523,44 +578,38 @@ impl App {
                 })
                 .collect()
         };
-        // let items: Vec<ListItem> = if let Some(repo) = self.local_repo.as_ref() {
-        //     if let Ok(statuses) = repo.statuses(None) {
-        //         statuses
-        //             .iter()
-        //             .map(|entry| {
-        //                 let path = entry.path().unwrap_or("unknown");
-        //                 let status = entry.status();
-        //                 let (label, color) = match status {
-        //                     s if s.contains(git2::Status::WT_MODIFIED) => {
-        //                         ("Modified", Color::Rgb(255, 179, 186))
-        //                     }
-        //                     s if s.contains(git2::Status::INDEX_MODIFIED) => {
-        //                         ("Staged", Color::Rgb(149, 225, 211))
-        //                     }
-        //                     s if s.contains(git2::Status::INDEX_NEW) => {
-        //                         ("New", Color::Rgb(149, 225, 211))
-        //                     }
-        //                     s if s.contains(git2::Status::WT_NEW) => ("Untracked", Color::DarkGray),
-        //                     s if s.contains(git2::Status::WT_DELETED) => ("Deleted", Color::Red),
-        //                     s if s.contains(git2::Status::IGNORED) => ("Ignored", Color::DarkGray),
-        //                     _ => ("Unknown", Color::White),
-        //                 };
-        //                 ListItem::new(format!("{:<40} {}", path, label))
-        //                     .style(Style::default().fg(color))
-        //             })
-        //             .collect()
-        //     } else {
-        //         vec![ListItem::new("Failed to get status")]
-        //     }
-        // } else {
-        //     vec![
-        //         ListItem::new("No local repository found")
-        //             .style(Style::default().fg(Color::DarkGray)),
-        //     ]
-        // };
 
         let list = List::new(items).highlight_symbol("> ");
         frame.render_stateful_widget(list, inner_area, &mut self.local_commit_state);
+    }
+
+    fn draw_commit_popup(&mut self, frame: &mut Frame) {
+        let centered_area = frame
+            .area()
+            .centered(Constraint::Percentage(60), Constraint::Percentage(20));
+
+        frame.render_widget(Clear, centered_area);
+
+        let block = Block::bordered()
+            .title(
+                "Commit Message"
+                    .to_span()
+                    .fg(Color::Yellow)
+                    .into_centered_line(),
+            )
+            .border_type(BorderType::Double)
+            .border_style(Style::default().fg(Color::Rgb(149, 225, 211)));
+
+        let inner = block.inner(centered_area);
+        frame.render_widget(block, centered_area);
+
+        let message = if let AppMode::CommitMessage(ref msg) = self.mode {
+            msg.as_str()
+        } else {
+            ""
+        };
+
+        frame.render_widget(Paragraph::new(message), inner);
     }
 
     fn render_tabs(&mut self, frame: &mut Frame, area: Rect, selected_tab: usize) {
@@ -792,6 +841,25 @@ impl App {
                 index.add_path(std::path::Path::new(path)).ok();
                 index.write().ok();
                 self.refresh_local_statuses();
+            }
+        }
+    }
+
+    fn commit(&mut self, message: &str) {
+        if let Some(repo) = self.local_repo.as_ref() {
+            let result = (|| -> Result<(), git2::Error> {
+                let sig = repo.signature()?;
+                let mut index = repo.index()?;
+                let tree_oid = index.write_tree()?;
+                let tree = repo.find_tree(tree_oid)?;
+                let parent_commit = repo.head()?.peel_to_commit()?;
+
+                repo.commit(Some("HEAD"), &sig, &sig, message, &tree, &[&parent_commit])?;
+                Ok(())
+            })();
+
+            if result.is_err() {
+                eprintln!("commit failed: {:?}", result);
             }
         }
     }
