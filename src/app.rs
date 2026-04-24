@@ -836,12 +836,21 @@ impl App {
     }
 
     fn stage_file(&mut self, path: &str) {
-        if let Some(repo) = self.local_repo.as_ref() {
-            if let Ok(mut index) = repo.index() {
-                index.add_path(std::path::Path::new(path)).ok();
-                index.write().ok();
-                self.refresh_local_statuses();
+        let is_ignored = self
+            .local_statuses
+            .iter()
+            .find(|e| e.path == path)
+            .map(|e| e.status.contains(git2::Status::IGNORED))
+            .unwrap_or(false);
+
+        if !is_ignored {
+            if let Some(repo) = self.local_repo.as_ref() {
+                if let Ok(mut index) = repo.index() {
+                    index.add_path(std::path::Path::new(path)).ok();
+                    index.write().ok();
+                }
             }
+            self.refresh_local_statuses();
         }
     }
 
