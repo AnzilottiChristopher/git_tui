@@ -239,6 +239,13 @@ impl App {
                         self.stage_file(&path);
                     }
                 }
+                'A' => {
+                    let paths: Vec<String> =
+                        self.local_statuses.iter().map(|m| m.path.clone()).collect();
+                    for path in paths {
+                        self.stage_file(&path);
+                    }
+                }
                 'c' => {
                     if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Local) {
                         self.mode = AppMode::CommitMessage(String::new());
