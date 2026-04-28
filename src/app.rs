@@ -246,6 +246,14 @@ impl App {
                         self.stage_file(&path);
                     }
                 }
+                'p' => {
+                    if let Some(repo) = &self.local_repo {
+                        if repo.head().is_ok() {
+                            //Change to an actual error handling
+                            let _ = self.push_origin();
+                        }
+                    }
+                }
                 'c' => {
                     if self.focused_panel == FocusedPanel::SingleRepo(SingleRepoPanel::Local) {
                         self.mode = AppMode::CommitMessage(String::new());
@@ -878,5 +886,16 @@ impl App {
                 eprintln!("commit failed: {:?}", result);
             }
         }
+    }
+
+    fn push_origin(&mut self) -> Result<(), git2::Error> {
+        if let Some(repo) = &self.local_repo {
+            let head = repo.head()?;
+            let branch_name = head.shorthand().unwrap_or("main");
+            let refspec = format!("refs/heads/{branch_name}:refs/heads/{branch_name}");
+            let mut remote = repo.find_remote("origin")?;
+            remote.push(&[refspec], None)?;
+        }
+        Ok(())
     }
 }
