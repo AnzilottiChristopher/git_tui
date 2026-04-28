@@ -894,7 +894,18 @@ impl App {
             let branch_name = head.shorthand().unwrap_or("main");
             let refspec = format!("refs/heads/{branch_name}:refs/heads/{branch_name}");
             let mut remote = repo.find_remote("origin")?;
-            remote.push(&[refspec], None)?;
+
+            let token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
+
+            let mut callbacks = git2::RemoteCallbacks::new();
+            callbacks.credentials(move |_url, _username, _allowed_types| {
+                git2::Cred::userpass_plaintext("git", &token)
+            });
+
+            let mut push_opts = git2::PushOptions::new();
+            push_opts.remote_callbacks(callbacks);
+
+            remote.push(&[refspec], Some(&mut push_opts))?;
         }
         Ok(())
     }
